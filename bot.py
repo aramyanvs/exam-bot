@@ -25,9 +25,6 @@ from db import (
 # ---------- КЛАВИАТУРЫ ----------
 
 def main_menu() -> InlineKeyboardMarkup:
-    """
-    Главное меню: открыть мини-приложение или посмотреть свои заявки.
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -49,9 +46,6 @@ def main_menu() -> InlineKeyboardMarkup:
 
 
 def admin_decision_kb(app_id: int) -> InlineKeyboardMarkup:
-    """
-    Кнопки админу: одобрить / отклонить заявку.
-    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -66,19 +60,16 @@ def admin_decision_kb(app_id: int) -> InlineKeyboardMarkup:
     )
 
 
-# ---------- ИНИЦИАЛИЗАЦИЯ БОТА ----------
+# ---------- ИНИЦИАЛИЗАЦИЯ ----------
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 
-# ---------- ХЕНДЛЕРЫ ДЛЯ АБИТУРИЕНТА ----------
+# ---------- ДЛЯ ПОЛЬЗОВАТЕЛЯ ----------
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    """
-    /start — показываем приветствие и главное меню.
-    """
     text = (
         "Здравствуйте! Это бот Московского экономического института.\n\n"
         "Через мини-приложение вы можете подать заявку "
@@ -90,10 +81,13 @@ async def cmd_start(message: Message):
 @dp.message(F.web_app_data)
 async def handle_webapp_data(message: Message):
     """
-    Сюда прилетают данные из мини-приложения (WebApp).
+    Сюда должны прилетать данные из мини-приложения.
     """
+    raw = message.web_app_data.data
+    await message.answer(f"DEBUG: я получил данные формы 👇\n<code>{raw}</code>", parse_mode="HTML")
+
     try:
-        data = json.loads(message.web_app_data.data)
+        data = json.loads(raw)
     except Exception as e:
         print(f"[ERROR] Не удалось распарсить web_app_data: {e}")
         await message.answer(
@@ -104,16 +98,14 @@ async def handle_webapp_data(message: Message):
     print(f"[INFO] Получены данные из WebApp от {message.from_user.id}: {data}")
 
     fio = (data.get("fio") or "").strip()
-    birth = (data.get("birth") or "").strip()      # YYYY-MM-DD
+    birth = (data.get("birth") or "").strip()
     email = (data.get("email") or "").strip()
     doc = (data.get("doc") or "").strip()
     level = (data.get("level") or "").strip()
     direction = (data.get("direction") or "").strip()
 
-    # Телефон пока ставим заглушкой — telegram_id
     phone = str(message.from_user.id)
 
-    # Минимальная валидация — чтобы не писать пустышки в базу
     if not (fio and birth and email and doc and level and direction):
         await message.answer(
             "Похоже, не все обязательные поля заполнены. "
@@ -144,20 +136,15 @@ async def handle_webapp_data(message: Message):
 
     await message.answer(
         f"Ваша заявка №{app_id} отправлена в приёмную комиссию.\n\n"
-        "После рассмотрения доступ к личному кабинету для сдачи "
-        "вступительных испытаний будет направлен сюда в чат.",
+        "После рассмотрения доступ к личному кабинету будет направлен сюда в чат.",
         reply_markup=main_menu(),
     )
 
-    # уведомляем админа
     await notify_admin_new_application(app_id)
 
 
 @dp.callback_query(F.data == "myapps")
 async def cb_myapps(call: CallbackQuery):
-    """
-    Показать пользователю список его заявок.
-    """
     apps = get_user_applications(call.from_user.id)
 
     if not apps:
@@ -168,21 +155,16 @@ async def cb_myapps(call: CallbackQuery):
 
     lines = []
     for app in apps:
-        line = (
-            f"№{app['id']}: {app['direction']} — "
-            f"{app['program_level']} — {app['status']}"
+        lines.append(
+            f"№{app['id']}: {app['direction']} — {app['program_level']} — {app['status']}"
         )
-        lines.append(line)
 
     await call.message.edit_text("\n".join(lines), reply_markup=main_menu())
 
 
-# ---------- УВЕДОМЛЕНИЕ АДМИНУ ----------
+# ---------- АДМИН ----------
 
 async def notify_admin_new_application(app_id: int):
-    """
-    Отправить админу уведомление о новой заявке.
-    """
     app = get_application(app_id)
     if not app:
         print(f"[WARN] Заявка #{app_id} не найдена в БД при уведомлении админа")
@@ -214,13 +196,8 @@ async def notify_admin_new_application(app_id: int):
         print(f"[ERROR] Не удалось отправить уведомление админу: {e}")
 
 
-# ---------- РЕШЕНИЕ АДМИНА ----------
-
 @dp.callback_query(F.data.startswith("approve:"))
 async def cb_approve(call: CallbackQuery):
-    """
-    Админ одобряет заявку.
-    """
     if call.from_user.id != ADMIN_CHAT_ID:
         await call.answer("Недостаточно прав.")
         return
@@ -252,9 +229,6 @@ async def cb_approve(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject:"))
 async def cb_reject(call: CallbackQuery):
-    """
-    Админ отклоняет заявку.
-    """
     if call.from_user.id != ADMIN_CHAT_ID:
         await call.answer("Недостаточно прав.")
         return
