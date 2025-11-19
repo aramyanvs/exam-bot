@@ -1,3 +1,4 @@
+# bot.py
 import asyncio
 import json
 import logging
@@ -12,23 +13,25 @@ from aiogram.types import (
     InlineKeyboardButton,
     WebAppInfo,
 )
+from aiogram.client.default import DefaultBotProperties
 
 from config import BOT_TOKEN, ADMIN_CHAT_ID
 from db import init_db, create_application, get_user_applications
 
 
-# === НАСТРОЙКИ ===
+# === КОНСТАНТЫ ===
 
-WEBAPP_URL = "https://aramyanvs.github.io/exam-bot-webapp/"  # твой GitHub Pages
+# URL твоего мини-приложения на GitHub Pages
+WEBAPP_URL = "https://aramyanvs.github.io/exam-bot-webapp/"
 
 
 # === КЛАВИАТУРЫ ===
 
 def main_menu() -> InlineKeyboardMarkup:
     """
-    Главное меню бота:
-    - кнопка для открытия мини-приложения
-    - кнопка "Мои заявки"
+    Главное меню:
+    - Заполнить анкету (WebApp)
+    - Мои заявки
     """
     kb = [
         [
@@ -47,18 +50,21 @@ def main_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-# === ОБРАБОТЧИКИ ===
+# === DISPATCHER ===
 
 dp = Dispatcher()
 
+
+# === ОБРАБОТЧИКИ ===
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message) -> None:
     text = (
         "Здравствуйте! 👋\n\n"
-        "Это бот приёмной комиссии МЭИ для записи на вступительные испытания.\n\n"
+        "Это бот приёмной комиссии Московского экономического института\n"
+        "для записи на вступительные испытания.\n\n"
         "Нажмите «📋 Заполнить анкету», заполните форму и отправьте заявку.\n"
-        "После обработки вы получите доступ в личный кабинет для сдачи вступительных испытаний."
+        "После обработки вы получите доступ в личный кабинет для сдачи испытаний."
     )
     await message.answer(text, reply_markup=main_menu())
 
@@ -67,7 +73,7 @@ async def cmd_start(message: Message) -> None:
 async def cb_myapps(call: CallbackQuery) -> None:
     """
     Показать пользователю список его заявок.
-    ВАЖНО: отправляем НОВОЕ сообщение, а не edit_text, чтобы не ловить
+    Отправляем НОВОЕ сообщение, чтобы не ловить
     ошибку 'message is not modified'.
     """
     await call.answer()  # убираем "часики"
@@ -82,8 +88,8 @@ async def cb_myapps(call: CallbackQuery) -> None:
 
     lines = []
     for app in apps:
-        # ожидаем, что db.get_user_applications возвращает словари с такими ключами:
-        # id, direction, program_level, status
+        # ожидаем, что db.get_user_applications вернёт dict:
+        # {id, direction, program_level, status}
         lines.append(
             f"• №{app['id']}: {app['direction']} — {app['program_level']} — {app['status']}"
         )
@@ -92,98 +98,113 @@ async def cb_myapps(call: CallbackQuery) -> None:
     await call.message.answer(text, reply_markup=main_menu())
 
 
-@dp.message(F.web_app_data)
-async def handle_webapp_data(message: Message) -> None:
+@dp.message()
+async def universal_handler(message: Message) -> None:
     """
-    Обработка данных из мини-приложения (Telegram WebApp).
-    В app.js должно быть примерно:
-        Telegram.WebApp.sendData(JSON.stringify({ ... }))
+    Универсальный обработчик:
+    - если пришли данные из WebApp (web_app_data) — обрабатываем заявку
+    - обычные сообщения пока просто логируем
     """
-    raw = message.web_app_data.data
 
-    logging.info("[WEBAPP] Получены сырые данные: %s", raw)
+    # 1) Ловим данные из WebApp (ключевой кейс)
+    if message.web_app_data is not None:
+        raw = message.web_app_data.data
+        logging.info("[WEBAPP] Получены сырые данные: %s", raw)
 
-    try:
-        data = json.loads(raw)
-    except Exception as e:
-        logging.exception("Не удалось распарсить JSON из WebApp: %s", e)
-        await message.answer(
-            "Не удалось прочитать данные заявки. Попробуйте ещё раз немного позже."
+        try:
+            data = json.loads(raw)
+        except Exception as e:
+            logging.exception("Не удалось распарсить JSON из WebApp: %s", e)
+            await message.answer(
+                "Не удалось прочитать данные заявки. Попробуйте ещё раз чуть позже."
+            )
+            return
+
+        # ПОЛЯ ДОЛЖНЫ СОВПАДАТЬ с app.js
+        fio = (data.get("fio") or "").strip()
+        birth = (data.get("birth") or "").strip()
+        email = (data.get("email") or "").strip()
+        doc_type = (data.get("doc_type") or "").strip()
+        level = (data.get("level") or "").strip()          # Бакалавриат / Магистратура / Аспирантура
+        direction = (data.get("direction") or "").strip()  # Направление подготовки
+
+        user_id = message.from_user.id
+        username = message.from_user.username or ""
+
+        # Сохраняем в базу
+        try:
+            app_id = create_application(
+                user_id=user_id,
+                username=username,
+                fio=fio,
+                birth=birth,
+                email=email,
+                doc_type=doc_type,
+                program_level=level,
+                direction=direction,
+            )
+        except Exception as e:
+            logging.exception("Ошибка при сохранении заявки в БД: %s", e)
+            await message.answer(
+                "Произошла ошибка при сохранении заявки. "
+                "Напишите, пожалуйста, в приёмную комиссию."
+            )
+            return
+
+        logging.info("[WEBAPP] Создана заявка #%s для user_id=%s", app_id, user_id)
+
+        # Сообщение пользователю
+        text_user = (
+            f"✅ Ваша заявка №{app_id} на вступительные испытания принята.\n\n"
+            f"Данные из анкеты:\n"
+            f"• ФИО: {fio}\n"
+            f"• Дата рождения: {birth}\n"
+            f"• Email: {email}\n"
+            f"• Документ об образовании: {doc_type}\n"
+            f"• Уровень: {level}\n"
+            f"• Направление: {direction}\n\n"
+            "После обработки заявки вам будет направлен доступ в личный кабинет "
+            "для сдачи вступительных испытаний."
         )
-        return
+        await message.answer(text_user, reply_markup=main_menu())
 
-    # Достаём поля из JSON (имена должны совпадать с app.js)
-    fio = (data.get("fio") or "").strip()
-    birth = (data.get("birth") or "").strip()
-    email = (data.get("email") or "").strip()
-    doc_type = (data.get("doc_type") or "").strip()
-    level = (data.get("level") or "").strip()          # Бакалавриат / Магистратура / Аспирантура
-    direction = (data.get("direction") or "").strip()  # Направление подготовки
-
-    user_id = message.from_user.id
-    username = message.from_user.username or ""
-
-    # Сохраняем в базу
-    try:
-        app_id = create_application(
-            user_id=user_id,
-            username=username,
-            fio=fio,
-            birth=birth,
-            email=email,
-            doc_type=doc_type,
-            program_level=level,
-            direction=direction,
+        # Уведомление админу
+        admin_text = (
+            "📥 Новая заявка на вступительные испытания\n\n"
+            f"№ {app_id}\n\n"
+            f"👤 Абитуриент: {fio}\n"
+            f"Telegram: @{username or '—'} (id: {user_id})\n\n"
+            f"📄 Документ: {doc_type}\n"
+            f"🎓 Уровень: {level}\n"
+            f"📚 Направление: {direction}\n"
+            f"📧 Email: {email}\n"
+            f"📅 Дата рождения: {birth}\n"
         )
-    except Exception as e:
-        logging.exception("Ошибка при сохранении заявки в БД: %s", e)
-        await message.answer(
-            "Произошла ошибка при сохранении заявки. Напишите, пожалуйста, в приёмную комиссию."
-        )
-        return
 
-    logging.info("[WEBAPP] Создана заявка #%s для user_id=%s", app_id, user_id)
+        try:
+            await message.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=admin_text,
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as e:
+            # Не падаем, если админу нельзя отправить (например, он не написал боту)
+            logging.exception("Не удалось отправить уведомление админу: %s", e)
 
-    # Сообщение пользователю
-    text_user = (
-        f"✅ Ваша заявка №{app_id} на вступительные испытания принята.\n\n"
-        f"Данные из анкеты:\n"
-        f"• ФИО: {fio}\n"
-        f"• Дата рождения: {birth}\n"
-        f"• Email: {email}\n"
-        f"• Документ об образовании: {doc_type}\n"
-        f"• Уровень: {level}\n"
-        f"• Направление: {direction}\n\n"
-        "После обработки заявки вам будет направлен доступ в личный кабинет "
-        "для сдачи вступительных испытаний."
+        return  # обработали web_app_data — выходим
+
+    # 2) Обычные текстовые сообщения (не из WebApp) — просто логируем
+    logging.info(
+        "[TEXT] Сообщение от %s (@%s): %s",
+        message.from_user.id,
+        message.from_user.username,
+        (message.text or "").replace("\n", "\\n") if message.text else "",
     )
-    await message.answer(text_user, reply_markup=main_menu())
-
-    # Уведомление админу
-    admin_text = (
-        "📥 Новая заявка на вступительные испытания\n\n"
-        f"№ {app_id}\n\n"
-        f"👤 Абитуриент: {fio}\n"
-        f"Telegram: @{username or '—'} (id: {user_id})\n\n"
-        f"📄 Документ: {doc_type}\n"
-        f"🎓 Уровень: {level}\n"
-        f"📚 Направление: {direction}\n"
-        f"📧 Email: {email}\n"
-        f"📅 Дата рождения: {birth}\n"
-    )
-
-    try:
-        await message.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=admin_text,
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception as e:
-        # не падаем, если админу не удалось отправить (например, не написал боту)
-        logging.exception("Не удалось отправить уведомление админу: %s", e)
+    # Если хочешь, чтобы бот отвечал на текст:
+    # await message.answer("Используйте, пожалуйста, кнопки меню.", reply_markup=main_menu())
 
 
-# === ЗАПУСК ===
+# === ЗАПУСК БОТА ===
 
 async def main() -> None:
     logging.basicConfig(
@@ -194,10 +215,14 @@ async def main() -> None:
     logging.info("[INFO] Инициализация БД…")
     init_db()
 
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
 
     logging.info("[INFO] Бот запущен, стартуем polling…")
-    await dp.start_polling(bot)
+    # resolve_used_update_types гарантирует, что Telegram шлёт всё нужное, включая web_app_data
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":
