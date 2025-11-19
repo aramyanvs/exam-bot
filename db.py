@@ -1,109 +1,108 @@
+# db.py
 import sqlite3
-from contextlib import closing
+from typing import List, Dict, Any
 
-DB_NAME = "exam_bot.db"
+from config import DB_PATH
 
 
 def _get_connection():
-    conn = sqlite3.connect(DB_NAME)
-    conn.row_factory = sqlite3.Row
+    """
+    Открываем новое соединение к БД.
+    Используем отдельное соединение на каждый запрос,
+    чтобы не ловить проблем в асинхронном окружении.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row  # чтобы получать dict-подобные строки
     return conn
 
 
-def init_db():
-    with _get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(
+def init_db() -> None:
+    """
+    Создаёт таблицу заявок, если её ещё нет.
+    """
+    conn = _get_connection()
+    try:
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS applications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id INTEGER NOT NULL,
-                fio TEXT NOT NULL,
-                birth_date TEXT,
-                phone TEXT,
-                email TEXT,
-                document_type TEXT,
-                program_level TEXT,
-                direction TEXT,
-                exam_form TEXT DEFAULT 'дистанционная',
-                status TEXT DEFAULT 'new',
-                created_at TEXT DEFAULT (datetime('now', 'localtime'))
-            )
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id         INTEGER NOT NULL,
+                username        TEXT,
+                fio             TEXT,
+                birth           TEXT,
+                email           TEXT,
+                doc_type        TEXT,
+                program_level   TEXT,
+                direction       TEXT,
+                status          TEXT DEFAULT 'Новая',
+                created_at      TEXT DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
         conn.commit()
+    finally:
+        conn.close()
 
 
 def create_application(
-    telegram_id: int,
+    user_id: int,
+    username: str,
     fio: str,
-    birth_date: str,
-    phone: str,
+    birth: str,
     email: str,
+    doc_type: str,
     program_level: str,
     direction: str,
-    document_type: str | None = None,
 ) -> int:
-    with _get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(
+    """
+    Создаёт новую заявку и возвращает её ID.
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
             """
             INSERT INTO applications (
-                telegram_id, fio, birth_date, phone, email,
-                document_type, program_level, direction
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                telegram_id,
+                user_id,
+                username,
                 fio,
-                birth_date,
-                phone,
+                birth,
                 email,
-                document_type,
+                doc_type,
                 program_level,
                 direction,
-            ),
+                status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Новая')
+            """,
+            (user_id, username, fio, birth, email, doc_type, program_level, direction),
         )
         conn.commit()
         return cur.lastrowid
+    finally:
+        conn.close()
 
 
-def get_user_applications(telegram_id: int) -> list[dict]:
-    with _get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(
+def get_user_applications(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Возвращает список заявок пользователя.
+    Используется для кнопки «Мои заявки».
+    """
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
             """
-            SELECT id, telegram_id, fio, birth_date, phone, email,
-                   document_type, program_level, direction,
-                   exam_form, status, created_at
+            SELECT
+                id,
+                direction,
+                program_level,
+                status
             FROM applications
-            WHERE telegram_id = ?
+            WHERE user_id = ?
             ORDER BY id DESC
             """,
-            (telegram_id,),
+            (user_id,),
         )
         rows = cur.fetchall()
-        return [dict(r) for r in rows]
-
-
-def get_application(app_id: int) -> dict | None:
-    with _get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(
-            """
-            SELECT id, telegram_id, fio, birth_date, phone, email,
-                   document_type, program_level, direction,
-                   exam_form, status, created_at
-            FROM applications
-            WHERE id = ?
-            """,
-            (app_id,),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-
-def set_status(app_id: int, status: str) -> None:
-    with _get_connection() as conn, closing(conn.cursor()) as cur:
-        cur.execute(
-            "UPDATE applications SET status = ? WHERE id = ?",
-            (status, app_id),
-        )
-        conn.commit()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
