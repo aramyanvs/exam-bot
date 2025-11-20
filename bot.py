@@ -21,7 +21,7 @@ from db import init_db, create_application, get_user_applications
 
 # === КОНСТАНТЫ ===
 
-WEBAPP_URL = "https://aramyanvs.github.io/exam-bot-webapp/"
+WEBAPP_URL = "https://aramyanvs.github.io/exam-bot-webapp/?v=3"
 
 
 # === КЛАВИАТУРЫ ===
