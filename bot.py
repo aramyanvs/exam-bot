@@ -21,7 +21,7 @@ from db import init_db, create_application, get_user_applications
 
 # === КОНСТАНТЫ ===
 
-# URL твоего мини-приложения на GitHub Pages
+# URL мини-приложения на GitHub Pages
 WEBAPP_URL = "https://aramyanvs.github.io/exam-bot-webapp/"
 
 
@@ -98,109 +98,112 @@ async def cb_myapps(call: CallbackQuery) -> None:
     await call.message.answer(text, reply_markup=main_menu())
 
 
+# === ОСНОВНОЙ ОБРАБОТЧИК ДАННЫХ ИЗ WEBAPP ===
+
+@dp.message(F.web_app_data)
+async def handle_webapp_data(message: Message) -> None:
+    """
+    Ловим данные, присланные из мини-приложения (WebApp).
+    Это сообщение особого типа: message.web_app_data != None.
+    """
+    raw = message.web_app_data.data
+    logging.info("[WEBAPP] Получены сырые данные: %s", raw)
+
+    try:
+        data = json.loads(raw)
+    except Exception as e:
+        logging.exception("Не удалось распарсить JSON из WebApp: %s", e)
+        await message.answer(
+            "Не удалось прочитать данные заявки. Попробуйте ещё раз чуть позже."
+        )
+        return
+
+    # ПОЛЯ ДОЛЖНЫ СОВПАДАТЬ с app.js
+    fio = (data.get("fio") or "").strip()
+    birth = (data.get("birth") or "").strip()
+    email = (data.get("email") or "").strip()
+    doc_type = (data.get("doc_type") or "").strip()
+    level = (data.get("level") or "").strip()          # Бакалавриат / Магистратура / Аспирантура
+    direction = (data.get("direction") or "").strip()  # Направление подготовки
+
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+
+    # Сохраняем в базу
+    try:
+        app_id = create_application(
+            user_id=user_id,
+            username=username,
+            fio=fio,
+            birth=birth,
+            email=email,
+            doc_type=doc_type,
+            program_level=level,
+            direction=direction,
+        )
+    except Exception as e:
+        logging.exception("Ошибка при сохранении заявки в БД: %s", e)
+        await message.answer(
+            "Произошла ошибка при сохранении заявки. "
+            "Напишите, пожалуйста, в приёмную комиссию."
+        )
+        return
+
+    logging.info("[WEBAPP] Создана заявка #%s для user_id=%s", app_id, user_id)
+
+    # Сообщение пользователю
+    text_user = (
+        f"✅ Ваша заявка №{app_id} на вступительные испытания принята.\n\n"
+        f"Данные из анкеты:\n"
+        f"• ФИО: {fio}\n"
+        f"• Дата рождения: {birth}\n"
+        f"• Email: {email}\n"
+        f"• Документ об образовании: {doc_type}\n"
+        f"• Уровень: {level}\n"
+        f"• Направление: {direction}\n\n"
+        "После обработки заявки вам будет направлен доступ в личный кабинет "
+        "для сдачи вступительных испытаний."
+    )
+    await message.answer(text_user, reply_markup=main_menu())
+
+    # Уведомление админу
+    admin_text = (
+        "📥 Новая заявка на вступительные испытания\n\n"
+        f"№ {app_id}\n\n"
+        f"👤 Абитуриент: {fio}\n"
+        f"Telegram: @{username or '—'} (id: {user_id})\n\n"
+        f"📄 Документ: {doc_type}\n"
+        f"🎓 Уровень: {level}\n"
+        f"📚 Направление: {direction}\n"
+        f"📧 Email: {email}\n"
+        f"📅 Дата рождения: {birth}\n"
+    )
+
+    try:
+        await message.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=admin_text,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as e:
+        # Не падаем, если админу нельзя отправить (например, он не написал боту)
+        logging.exception("Не удалось отправить уведомление админу: %s", e)
+
+
+# === ПРОЧИЕ СООБЩЕНИЯ (текст и т.п.) ===
+
 @dp.message()
 async def universal_handler(message: Message) -> None:
     """
-    Универсальный обработчик:
-    - если пришли данные из WebApp (web_app_data) — обрабатываем заявку
-    - обычные сообщения пока просто логируем
+    Обычные текстовые сообщения (не из WebApp) — просто логируем.
     """
-
-    # 1) Ловим данные из WebApp (ключевой кейс)
-    if message.web_app_data is not None:
-        raw = message.web_app_data.data
-        logging.info("[WEBAPP] Получены сырые данные: %s", raw)
-
-        try:
-            data = json.loads(raw)
-        except Exception as e:
-            logging.exception("Не удалось распарсить JSON из WebApp: %s", e)
-            await message.answer(
-                "Не удалось прочитать данные заявки. Попробуйте ещё раз чуть позже."
-            )
-            return
-
-        # ПОЛЯ ДОЛЖНЫ СОВПАДАТЬ с app.js
-        fio = (data.get("fio") or "").strip()
-        birth = (data.get("birth") or "").strip()
-        email = (data.get("email") or "").strip()
-        doc_type = (data.get("doc_type") or "").strip()
-        level = (data.get("level") or "").strip()          # Бакалавриат / Магистратура / Аспирантура
-        direction = (data.get("direction") or "").strip()  # Направление подготовки
-
-        user_id = message.from_user.id
-        username = message.from_user.username or ""
-
-        # Сохраняем в базу
-        try:
-            app_id = create_application(
-                user_id=user_id,
-                username=username,
-                fio=fio,
-                birth=birth,
-                email=email,
-                doc_type=doc_type,
-                program_level=level,
-                direction=direction,
-            )
-        except Exception as e:
-            logging.exception("Ошибка при сохранении заявки в БД: %s", e)
-            await message.answer(
-                "Произошла ошибка при сохранении заявки. "
-                "Напишите, пожалуйста, в приёмную комиссию."
-            )
-            return
-
-        logging.info("[WEBAPP] Создана заявка #%s для user_id=%s", app_id, user_id)
-
-        # Сообщение пользователю
-        text_user = (
-            f"✅ Ваша заявка №{app_id} на вступительные испытания принята.\n\n"
-            f"Данные из анкеты:\n"
-            f"• ФИО: {fio}\n"
-            f"• Дата рождения: {birth}\n"
-            f"• Email: {email}\n"
-            f"• Документ об образовании: {doc_type}\n"
-            f"• Уровень: {level}\n"
-            f"• Направление: {direction}\n\n"
-            "После обработки заявки вам будет направлен доступ в личный кабинет "
-            "для сдачи вступительных испытаний."
-        )
-        await message.answer(text_user, reply_markup=main_menu())
-
-        # Уведомление админу
-        admin_text = (
-            "📥 Новая заявка на вступительные испытания\n\n"
-            f"№ {app_id}\n\n"
-            f"👤 Абитуриент: {fio}\n"
-            f"Telegram: @{username or '—'} (id: {user_id})\n\n"
-            f"📄 Документ: {doc_type}\n"
-            f"🎓 Уровень: {level}\n"
-            f"📚 Направление: {direction}\n"
-            f"📧 Email: {email}\n"
-            f"📅 Дата рождения: {birth}\n"
-        )
-
-        try:
-            await message.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=admin_text,
-                parse_mode=ParseMode.HTML,
-            )
-        except Exception as e:
-            # Не падаем, если админу нельзя отправить (например, он не написал боту)
-            logging.exception("Не удалось отправить уведомление админу: %s", e)
-
-        return  # обработали web_app_data — выходим
-
-    # 2) Обычные текстовые сообщения (не из WebApp) — просто логируем
     logging.info(
         "[TEXT] Сообщение от %s (@%s): %s",
         message.from_user.id,
         message.from_user.username,
         (message.text or "").replace("\n", "\\n") if message.text else "",
     )
-    # Если хочешь, чтобы бот отвечал на текст:
+    # Можно и отвечать, если нужно:
     # await message.answer("Используйте, пожалуйста, кнопки меню.", reply_markup=main_menu())
 
 
